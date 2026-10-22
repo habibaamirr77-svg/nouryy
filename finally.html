@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>المعرض ثلاثي الأبعاد</title>
+<style>
+:root{--bg:#111;--fg:#f4efe6;--accent:#c9a15b}
+html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;font-family:"Segoe UI",Tahoma,Arial,sans-serif;color:var(--fg);touch-action:none}
+canvas{display:block}
+#ui{position:fixed;top:12px;right:12px;left:12px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none}
+.box{background:rgba(20,18,15,.72);border:1px solid rgba(201,161,91,.45);border-radius:12px;padding:10px 14px;font-size:13px;line-height:1.7;backdrop-filter:blur(6px);pointer-events:auto}
+h1{margin:0 0 4px;font-size:16px;color:var(--accent)}
+button{background:var(--accent);color:#1a1510;border:0;border-radius:8px;padding:9px 14px;font:inherit;font-weight:700;cursor:pointer}
+#aim{position:fixed;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:rgba(255,255,255,.6);pointer-events:none}
+
+[hidden]{display:none!important}
+button.ghost{background:rgba(255,255,255,.12);color:var(--fg);border:1px solid rgba(201,161,91,.5)}
+#zoomui{position:fixed;bottom:calc(18px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:10px;background:rgba(20,18,15,.78);border:1px solid rgba(201,161,91,.45);border-radius:14px;padding:12px 18px;backdrop-filter:blur(6px)}
+#ztitle{font-size:16px;font-weight:700;color:var(--accent)}
+#map{position:fixed;left:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));border-radius:10px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="aim"></div>
+<div id="zoomui" hidden><div id="ztitle"></div><div><button id="zclose" class="ghost">✕ رجوع</button></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ===== الإعدادات: أبعاد القاعة ومواقع اللوحات =====
+const W = 26;   // العرض
+const D = 18;   // العمق
+const H = 5;    // الارتفاع
+
+const Y = 2.3, O = 0.05; // ارتفاع اللوحات + بعدها عن الجدار
+
+// كل لوحة: [x, y, z, دوران, عرض, ارتفاع]  — أضف أو احذف سطر لتغيير عدد اللوحات
+const SLOTS = [
+  [-7, Y, -D/2 + O, 0, 3.6, 2.4],
+  [ 0, Y, -D/2 + O, 0, 4.2, 2.8],
+  [ 7, Y, -D/2 + O, 0, 3.6, 2.4],
+  [-W/2 + O, Y, -4,  Math.PI/2, 3, 2.2],
+  [-W/2 + O, Y,  4,  Math.PI/2, 3, 2.2],
+  [ W/2 - O, Y, -4, -Math.PI/2, 3, 2.2],
+  [ W/2 - O, Y,  4, -Math.PI/2, 3, 2.2],
+  [-5, Y, D/2 - O, Math.PI, 3, 2.2],
+  [ 5, Y, D/2 - O, Math.PI, 3, 2.2],
+];
+
+// ===== صور اللوحات (بنفس ترتيب SLOTS) =====
+// غيّري أي رابط هنا، أو ضعي صورك في مجلد images/ واكتبي مثلاً 'images/1.jpg'
+const IMAGES = [
+  'https://i.postimg.cc/8C9mT3hW/Whats-App-Image-2026-10-20-at-1-21-35-AM.jpg',
+  'https://i.postimg.cc/MpsYFXHh/Whats-App-Image-2026-10-20-at-1-21-35-AM-(3).jpg',
+  'https://i.postimg.cc/8sQRLryW/Whats-App-Image-2026-10-20-at-1-21-35-AM-(2).jpg',
+  'https://i.postimg.cc/xdt3B8Cn/Whats-App-Image-2026-10-20-at-1-21-35-AM-(1).jpg',
+  'https://i.postimg.cc/ZRvj3ZbS/Whats-App-Image-2026-10-20-at-1-20-23-AM.jpg',
+  'https://i.postimg.cc/k54TJKLV/Whats-App-Image-2026-10-20-at-1-20-23-AM-(3).jpg',
+  'https://i.postimg.cc/Z5JfQ1cn/Whats-App-Image-2026-10-20-at-1-20-23-AM-(2).jpg',
+  'https://i.postimg.cc/tRVmndJ7/Whats-App-Image-2026-10-20-at-1-20-23-AM-(1).jpg',
+  'https://i.postimg.cc/8sQRLryW/Whats-App-Image-2026-10-20-at-1-21-35-AM-(2).jpg',
+];
+
+
+// ===== المشهد والكاميرا + دوال مساعدة =====
+const R = new THREE.WebGLRenderer({ antialias: true });
+R.setPixelRatio(Math.min(devicePixelRatio, 2));
+R.setSize(innerWidth, innerHeight);
+R.outputEncoding = THREE.sRGBEncoding;
+R.toneMapping = THREE.ACESFilmicToneMapping;
+R.toneMappingExposure = 1.1;
+R.shadowMap.enabled = true;
+R.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(R.domElement);
+
+const S = new THREE.Scene();
+S.background = new THREE.Color(0x1a1714);
+
+const C = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, .1, 100);
+C.position.set(0, 1.65, 6);
+C.rotation.order = 'YXZ';
+
+addEventListener('resize', () => {
+  R.setSize(innerWidth, innerHeight);
+  C.aspect = innerWidth / innerHeight;
+  C.updateProjectionMatrix();
+});
+
+// رسم على canvas وتحويله لخامة
+function cv(w, h, draw) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+const std = (o) => new THREE.MeshStandardMaterial(o);
+function box(w, h, d, m, x, y, z, parent) {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  b.position.set(x, y, z);
+  (parent || S).add(b);
+  return b;
+}
+
+
+// ===== القاعة: أرضية، جدران، سقف، إضاءة =====
+const glow = new THREE.MeshBasicMaterial({ color: 0xfff2d8 });
+const wallM = std({ color: 0xf1ede6, roughness: .95 });
+const accM  = std({ color: 0x3b4a47, roughness: .95 });
+const baseM = std({ color: 0xffffff, roughness: .6 });
+
+// أرضية باركيه
+const floorTex = cv(1024, 1024, (g, w, h) => {
+  const rows = 8;
+  for (let i = 0; i < rows; i++) for (let j = 0; j < 4; j++) {
+    g.fillStyle = `hsl(28,${42 + Math.random()*10}%,${34 + Math.random()*10}%)`;
+    const pw = w/4, ph = h/rows, x = ((j + (i % 2) * .5) % 4) * pw;
+    g.fillRect(x, i*ph, pw-2, ph-2);
+    if (x + pw > w) g.fillRect(x - w, i*ph, pw-2, ph-2);
+  }
+});
+floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+floorTex.repeat.set(6, 4);
+floorTex.anisotropy = 8;
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), std({ map: floorTex, roughness: .35, metalness: .05 }));
+floor.rotation.x = -Math.PI / 2;
+S.add(floor);
+
+// سقف
+const ceil = new THREE.Mesh(new THREE.PlaneGeometry(W, D), std({ color: 0xfaf8f4, roughness: 1 }));
+ceil.rotation.x = Math.PI / 2; ceil.position.y = H;
+S.add(ceil);
+
+// جدران
+box(W, H, .3, accM,  0, H/2, -D/2 - .15);
+box(W, H, .3, wallM, 0, H/2,  D/2 + .15);
+box(.3, H, D, wallM, -W/2 - .15, H/2, 0);
+box(.3, H, D, wallM,  W/2 + .15, H/2, 0);
+
+// نِعال الجدران (baseboards)
+box(W, .18, .06, baseM, 0, .09, -D/2 + .03);
+box(W, .18, .06, baseM, 0, .09,  D/2 - .03);
+box(.06, .18, D, baseM, -W/2 + .03, .09, 0);
+box(.06, .18, D, baseM,  W/2 - .03, .09, 0);
+
+// أعمدة
+[[-4.5, -8.6], [4.5, -8.6]].forEach(([x, z]) => box(.5, H, .5, wallM, x, H/2, z));
+
+// إضاءة السقف
+for (let x = -8; x <= 8; x += 8) for (let z = -5; z <= 5; z += 5) box(3, .05, .5, glow, x, H - .03, z);
+S.add(new THREE.HemisphereLight(0xfff4e0, 0x4a3a2a, .55));
+[[-8,-3],[8,-3],[0,4]].forEach(([x, z]) => {
+  const l = new THREE.PointLight(0xffe6c0, .6, 18, 1.6);
+  l.position.set(x, H - .6, z);
+  S.add(l);
+});
+
+// ===== إضاءة موجهة بظلال حقيقية =====
+const shadowLight = new THREE.SpotLight(0xfff0d8, 1.4, 40, 1.05, .6, 1);
+shadowLight.position.set(6, H - .3, 5);
+shadowLight.target.position.set(0, 0, 0);
+shadowLight.castShadow = true;
+shadowLight.shadow.mapSize.set(1024, 1024);
+shadowLight.shadow.bias = -.0004;
+S.add(shadowLight, shadowLight.target);
+
+// ===== عوارض السقف =====
+const beamM = std({ color: 0x6b4a2e, roughness: .6 });
+[-7.5, -2.5, 2.5, 7.5].forEach(z => box(W, .25, .35, beamM, 0, H - .125, z));
+
+// ===== نوافذ بضوء النهار =====
+const sky = cv(128, 128, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, '#9ec9ff'); gr.addColorStop(1, '#f4f9ff');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(255,255,255,.7)';
+  [[30,40,18],[60,50,24],[95,35,16],[80,85,22]].forEach(([x, y, r]) => { g.beginPath(); g.arc(x, y, r, 0, 6.3); g.fill(); });
+});
+[-1, 1].forEach(side => {
+  const g = new THREE.Group();
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.6), new THREE.MeshBasicMaterial({ map: sky }));
+  glass.position.z = .01; g.add(glass);
+  box(2.6, .12, .1, baseM, 0,  1.3, .05, g); box(2.6, .12, .1, baseM, 0, -1.3, .05, g);
+  box(.12, 2.6, .1, baseM, -1.25, 0, .05, g); box(.12, 2.6, .1, baseM, 1.25, 0, .05, g);
+  box(.06, 2.6, .06, baseM, 0, 0, .05, g); box(2.4, .06, .06, baseM, 0, 0, .05, g);
+  box(2.9, .1, .35, baseM, 0, -1.35, .15, g);
+  g.position.set(side * (W/2 - .03), 2.4, 0);
+  g.rotation.y = side < 0 ? Math.PI/2 : -Math.PI/2;
+  S.add(g);
+});
+
+
+// ===== الديكورات: بنشات، سجادة، منحوتة، نباتات =====
+const wood    = std({ color: 0x5a3a22, roughness: .5 });
+const leather = std({ color: 0x2a2420, roughness: .7 });
+const obst = []; // عوائق الحركة (التصادم)
+
+function bench(x, z, rot) {
+  const g = new THREE.Group();
+  box(3, .12, .9, leather, 0, .48, 0, g);
+  [-1.3, 1.3].forEach(a => box(.1, .45, .8, wood, a, .22, 0, g));
+  g.position.set(x, 0, z); g.rotation.y = rot;
+  S.add(g);
+  obst.push({ x, z, hx: rot ? .5 : 1.6, hz: rot ? 1.6 : .5 });
+}
+
+function plant(x, z) {
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(.35, .28, .7, 20), std({ color: 0xb8683f, roughness: .8 }));
+  pot.position.set(x, .35, z); S.add(pot);
+  const leafM = std({ color: 0x2f6b3a, roughness: .8 });
+  for (let i = 0; i < 14; i++) {
+    const a = i * 2.4, r = .1 + Math.random() * .3;
+    const s = new THREE.Mesh(new THREE.SphereGeometry(.28, 10, 8), leafM);
+    s.scale.set(1, 1.6, .5);
+    s.position.set(x + Math.cos(a)*r, 1.1 + Math.random()*.9, z + Math.sin(a)*r);
+    s.rotation.set(Math.random() - .5, a, Math.random() - .5);
+    S.add(s);
+  }
+  obst.push({ x, z, hx: .4, hz: .4 });
+}
+
+// سجادة
+const rug = new THREE.Mesh(new THREE.PlaneGeometry(9, 5), std({
+  map: cv(256, 160, (g, w, h) => {
+    g.fillStyle = '#6d2f2a'; g.fillRect(0, 0, w, h);
+    g.strokeStyle = '#d8b878'; g.lineWidth = 4; g.strokeRect(8, 8, w-16, h-16);
+    g.lineWidth = 1.5; g.strokeRect(18, 18, w-36, h-36);
+    for (let i = 0; i < 9; i++) { g.beginPath(); g.moveTo(w/2, 26); g.arc(28 + i*25, h/2, 10, 0, 6.3); g.stroke(); }
+  }), roughness: 1 }));
+rug.rotation.x = -Math.PI / 2; rug.position.y = .012;
+S.add(rug);
+
+bench(0, -2.2, 0);
+bench(0,  2.2, 0);
+
+// قاعدة + منحوتة
+const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(.55, .65, 1.1, 32), std({ color: 0xe9e5de, roughness: .5 }));
+pedestal.position.set(0, .55, 0); S.add(pedestal);
+const sculpture = new THREE.Mesh(new THREE.TorusKnotGeometry(.35, .1, 120, 16), std({ color: 0xc9a15b, metalness: .9, roughness: .25 }));
+sculpture.position.set(0, 1.65, 0); S.add(sculpture);
+obst.push({ x: 0, z: 0, hx: .7, hz: .7 });
+
+[[-12,-8],[12,-8],[-12,8],[12,8]].forEach(p => plant(...p));
+
+// ===== منحوتات إضافية أمام النوافذ =====
+function pedestalWith(x, z, geo, mat) {
+  const p = new THREE.Mesh(new THREE.CylinderGeometry(.4, .45, 1.2, 24), std({ color: 0xe9e5de, roughness: .5 }));
+  p.position.set(x, .6, z); S.add(p);
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, 1.2 + .4, z); S.add(m);
+  obst.push({ x, z, hx: .5, hz: .5 });
+  return m;
+}
+const sculpt2 = pedestalWith(-11.4, 0, new THREE.SphereGeometry(.4, 32, 24), std({ color: 0xf5f2ec, roughness: .15, metalness: .1 }));
+const sculpt3 = pedestalWith( 11.4, 0, new THREE.IcosahedronGeometry(.42, 0), std({ color: 0x3b4a47, roughness: .3, metalness: .6 }));
+
+// ===== غبار عائم في الهواء =====
+const DN = 250, dpos = new Float32Array(DN * 3);
+for (let i = 0; i < DN; i++) { dpos[i*3] = (Math.random() - .5) * (W - 2); dpos[i*3+1] = Math.random() * H; dpos[i*3+2] = (Math.random() - .5) * (D - 2); }
+const dustGeo = new THREE.BufferGeometry();
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dpos, 3));
+const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({ color: 0xfff0d0, size: .035, transparent: true, opacity: .5, depthWrite: false }));
+S.add(dust);
+
+// ===== تفعيل الظلال لكل الأجسام الحقيقية =====
+S.traverse(o => { if (o.isMesh && !o.material.isMeshBasicMaterial) { o.castShadow = true; o.receiveShadow = true; } });
+
+
+// ===== اللوحات ورفع الصور =====
+const slots = [];
+const frameM = std({ color: 0x1d1510, roughness: .4, metalness: .2 });
+const goldM  = std({ color: 0xc9a15b, roughness: .3, metalness: .8 });
+// أنماط الإطارات: [حجم خارجي, مادة, حجم داخلي, مادة]
+const FRAMES = [
+  [1.1,  goldM, 1.06, frameM],                                  // كلاسيكي
+  [1.04, std({ color: 0x0e0e0e, roughness: .3 }), 1.0, frameM], // عصري
+  [1.09, wood,  1.04, std({ color: 0x3a2514, roughness: .6 })], // خشبي
+];
+
+function placeholder(i) {
+  return cv(512, 384, (g, w, h) => {
+    const hu = (i * 47) % 360;
+    const gr = g.createLinearGradient(0, 0, w, h);
+    gr.addColorStop(0, `hsl(${hu},60%,30%)`); gr.addColorStop(1, `hsl(${hu+60},70%,60%)`);
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    for (let k = 0; k < 14; k++) {
+      g.globalAlpha = .5;
+      g.fillStyle = `hsl(${hu + Math.random()*120},70%,${40 + Math.random()*30}%)`;
+      g.beginPath();
+      if (k % 2) g.arc(Math.random()*w, Math.random()*h, 20 + Math.random()*80, 0, 6.3);
+      else g.rect(Math.random()*w, Math.random()*h, 40 + Math.random()*120, 30 + Math.random()*80);
+      g.fill();
+    }
+    g.globalAlpha = 1; g.fillStyle = 'rgba(255,255,255,.85)'; g.font = '22px sans-serif'; g.textAlign = 'center';
+    g.fillText('جارٍ تحميل الصورة...', w/2, h - 18);
+  });
+}
+
+// لوحة الاسم تحت اللوحة
+function drawPlaque(s) {
+  const g = s.pc.getContext('2d'), w = s.pc.width, h = s.pc.height;
+  g.fillStyle = '#1b1713'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#c9a15b'; g.lineWidth = 3; g.strokeRect(4, 4, w-8, h-8);
+  g.fillStyle = '#f4efe6'; g.font = 'bold 26px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(s.title, w/2, h/2);
+  s.pt.needsUpdate = true;
+}
+
+function createSlot([x, y, z, ry, w, h], i) {
+  const g = new THREE.Group();
+  const f = FRAMES[i % FRAMES.length];
+  box(f[0], f[0], .08, f[1], 0, 0, 0, g);
+  box(f[2], f[2], .1,  f[3], 0, 0, .01, g);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: placeholder(i) }));
+  m.position.z = .065; g.add(m);
+
+  // مصباح فوق اللوحة
+  const lamp = new THREE.Group();
+  box(.7, .06, .2, std({ color: 0x222222 }), 0, 0, 0, lamp);
+  box(.6, .02, .12, glow, 0, -.04, 0, lamp);
+  lamp.scale.set(1/w, 1/h, 1); lamp.position.set(0, .5 + .25/h, .2);
+  g.add(lamp);
+
+  // لوحة الاسم
+  const pc = document.createElement('canvas'); pc.width = 256; pc.height = 64;
+  const pt = new THREE.CanvasTexture(pc); pt.encoding = THREE.sRGBEncoding;
+  const plaque = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: pt }));
+  plaque.scale.set(.9 / w, .22 / h, 1); plaque.position.set(0, -.5 - .23/h, .06);
+  g.add(plaque);
+
+  g.position.set(x, y, z); g.rotation.y = ry; g.scale.set(w, h, 1);
+  S.add(g);
+
+  // إضاءة موجهة على اللوحة
+  const n = new THREE.Vector3(Math.sin(ry), 0, Math.cos(ry));
+  const sp = new THREE.SpotLight(0xffe2b8, 1.6, 12, .75, .7, 1.4);
+  sp.position.set(x, H - .25, z).addScaledVector(n, 2.2);
+  sp.target.position.set(x, y, z);
+  S.add(sp, sp.target);
+
+  const s = { g, m, w, h, maxW: w, maxH: h, pc, pt, title: 'لوحة ' + (i + 1) };
+  drawPlaque(s);
+  m.userData.slot = s;
+  slots.push(s);
+}
+SLOTS.forEach(createSlot);
+
+// وضع صورة داخل لوحة مع ضبط النسبة
+function setImage(s, url, name) {
+  const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
+  loader.load(url, t => {
+    t.encoding = THREE.sRGBEncoding; t.anisotropy = 8;
+    const a = t.image.width / t.image.height;
+    let w = s.maxH * a, h = s.maxH;
+    if (w > s.maxW) { w = s.maxW; h = s.maxW / a; }
+    s.g.scale.set(w, h, 1);
+    s.m.material.map = t; s.m.material.needsUpdate = true;
+    if (name) { s.title = name.replace(/\.[^.]+$/, '').slice(0, 24); drawPlaque(s); }
+    // إعادة ضبط أبعاد لوحة الاسم والمصباح بعد تغيير الحجم
+    s.g.children.forEach(c => {
+      if (c.isGroup) { c.scale.set(1/w, 1/h, 1); c.position.y = .5 + .25/h; }
+      else if (c.geometry && c.geometry.type === 'PlaneGeometry' && c !== s.m) { c.scale.set(.9/w, .22/h, 1); c.position.y = -.5 - .23/h; }
+    });
+    s.w = w; s.h = h;
+    if (typeof zoom !== 'undefined' && zoom && zoom.s === s) document.getElementById('ztitle').textContent = s.title;
+  }, undefined, () => console.warn('تعذر تحميل الصورة:', url));
+}
+
+// ---- تحميل الصور الثابتة من config.js
+IMAGES.forEach((url, i) => { if (slots[i]) setImage(slots[i], url); });
+
+
+// ===== التحكم: ماوس + كيبورد + لمس + تكبير اللوحة =====
+let yaw = 0, pitch = 0;
+const keys = {}, mv = { x: 0, y: 0 }, ptr = {};
+const ray = new THREE.Raycaster();
+let zoom = null; // حالة التكبير
+
+const zui = document.getElementById('zoomui'), ztitle = document.getElementById('ztitle');
+document.getElementById('zclose').onclick = () => closeZoom();
+
+addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Escape') closeZoom(); });
+addEventListener('keyup',   e => keys[e.code] = false);
+
+function openZoom(s) {
+  if (zoom) return;
+  const ry = s.g.rotation.y, n = new THREE.Vector3(Math.sin(ry), 0, Math.cos(ry));
+  const t = Math.tan(THREE.MathUtils.degToRad(C.fov / 2));
+  const d = Math.max(1.6, Math.max(s.h / 2 / t, s.w / 2 / (t * C.aspect)) * 1.2 + .3);
+  zoom = { s, saved: { p: C.position.clone(), yaw, pitch }, tp: s.g.position.clone().addScaledVector(n, d), ty: ry, tpitch: 0, closing: false };
+  zoom.tp.y = s.g.position.y;
+  ztitle.textContent = s.title;
+  zui.hidden = false;
+  Object.keys(keys).forEach(k => keys[k] = false); mv.x = mv.y = 0;
+}
+function closeZoom() {
+  if (!zoom || zoom.closing) return;
+  zoom.closing = true; zui.hidden = true;
+  zoom.tp = zoom.saved.p; zoom.ty = zoom.saved.yaw; zoom.tpitch = zoom.saved.pitch;
+}
+// يرجع true أثناء التكبير (الحركة العادية تتوقف)
+function updateZoom(dt) {
+  if (!zoom) return false;
+  const k = 1 - Math.exp(-dt * 5);
+  C.position.lerp(zoom.tp, k);
+  const dy = ((zoom.ty - yaw + Math.PI) % (2*Math.PI) + 2*Math.PI) % (2*Math.PI) - Math.PI;
+  yaw += dy * k; pitch += (zoom.tpitch - pitch) * k;
+  C.rotation.set(pitch, yaw, 0);
+  if (zoom.closing && C.position.distanceTo(zoom.tp) < .05 && Math.abs(dy) < .02) { zoom = null; }
+  return true;
+}
+
+R.domElement.addEventListener('pointerdown', e => {
+  R.domElement.setPointerCapture(e.pointerId);
+  const mode = e.pointerType === 'touch' && e.clientX < innerWidth / 2 ? 'move' : 'look';
+  ptr[e.pointerId] = { mode, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY };
+});
+
+R.domElement.addEventListener('pointermove', e => {
+  const p = ptr[e.pointerId]; if (!p || zoom) return;
+  if (p.mode === 'look') {
+    yaw   -= (e.clientX - p.x) * .004;
+    pitch -= (e.clientY - p.y) * .004;
+    pitch = Math.max(-1.2, Math.min(1.2, pitch));
+    p.x = e.clientX; p.y = e.clientY;
+  } else {
+    mv.x = Math.max(-1, Math.min(1, (e.clientX - p.sx) / 50));
+    mv.y = Math.max(-1, Math.min(1, (e.clientY - p.sy) / 50));
+  }
+});
+
+function pointerUp(e) {
+  const p = ptr[e.pointerId]; if (!p) return;
+  const tap = Math.hypot(e.clientX - p.sx, e.clientY - p.sy) < 6;
+  if (zoom) { if (tap) closeZoom(); }
+  else if (p.mode === 'look' && tap) {
+    ray.setFromCamera({ x: e.clientX / innerWidth * 2 - 1, y: -(e.clientY / innerHeight) * 2 + 1 }, C);
+    const hit = ray.intersectObjects(slots.map(s => s.m))[0];
+    if (hit && hit.distance < 16) openZoom(hit.object.userData.slot);
+  }
+  if (p.mode === 'move') mv.x = mv.y = 0;
+  delete ptr[e.pointerId];
+}
+R.domElement.addEventListener('pointerup', pointerUp);
+R.domElement.addEventListener('pointercancel', pointerUp);
+
+// تصادم مع الجدران والأثاث
+function blocked(x, z) {
+  if (Math.abs(x) > W/2 - .8 || Math.abs(z) > D/2 - .8) return true;
+  return obst.some(b => Math.abs(x - b.x) < b.hx + .3 && Math.abs(z - b.z) < b.hz + .3);
+}
+
+
+// ===== صوت الخطوات على الباركيه (مولّد بالكود، بدون ملفات) =====
+let AC, master;
+
+function audioInit() {
+  if (AC) return;
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value = .6; master.connect(AC.destination);
+}
+
+function step() {
+  if (!AC) return;
+  const len = AC.sampleRate * .12 | 0, b = AC.createBuffer(1, len, AC.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+  const s = AC.createBufferSource(); s.buffer = b;
+  const f = AC.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 300 + Math.random() * 150;
+  const g = AC.createGain(); g.gain.value = .5;
+  s.connect(f); f.connect(g); g.connect(master); s.start();
+}
+
+// المتصفحات تشترط تفاعل المستخدم قبل تشغيل الصوت
+addEventListener('pointerdown', audioInit, { once: true });
+addEventListener('keydown', audioInit, { once: true });
+
+
+// ===== حلقة التشغيل =====
+const clock = new THREE.Clock();
+let bob = 0, lastStep = 0, T = 0;
+
+(function loop() {
+  requestAnimationFrame(loop);
+  const dt = Math.min(clock.getDelta(), .05); T += dt;
+
+  if (!updateZoom(dt)) {
+    const f = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0) - mv.y;
+    const s = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0) + mv.x;
+    if (keys.ArrowLeft)  yaw += dt * 1.6;
+    if (keys.ArrowRight) yaw -= dt * 1.6;
+
+    const sp = 4 * dt;
+    const dx = (-Math.sin(yaw) * f + Math.cos(yaw) * s) * sp;
+    const dz = (-Math.cos(yaw) * f - Math.sin(yaw) * s) * sp;
+    if (!blocked(C.position.x + dx, C.position.z)) C.position.x += dx;
+    if (!blocked(C.position.x, C.position.z + dz)) C.position.z += dz;
+
+    if (f || s) {
+      bob += dt * 9;
+      const st = Math.floor(bob / Math.PI);
+      if (st !== lastStep) { lastStep = st; step(); }
+    }
+    C.position.y = 1.65 + Math.sin(bob) * .025 * (f || s ? 1 : 0);
+    C.rotation.set(pitch, yaw, 0);
+  }
+
+  sculpture.rotation.y += dt * .6;
+  sculpt2.rotation.y += dt * .3; sculpt3.rotation.y -= dt * .4;
+  dust.rotation.y += dt * .01; dust.position.y = Math.sin(T * .2) * .15;
+  R.render(S, C);
+})();
+
+
+</script>
+</body>
+</html>
